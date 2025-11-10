@@ -227,11 +227,53 @@ class ISUPProtocolHandler:
     
     def handle_face_data(self, payload: bytes, client_addr: Tuple) -> bytes:
         """Handle face data transfer"""
-        
+
         logger.info(f"Face data received: {len(payload)} bytes from {client_addr[0]}")
-        
-        # TODO: Process and store face data
-        
+
+        try:
+            # Parse face data from payload
+            face_data = self.parse_face_data(payload)
+
+            # Store face data in database
+            from database import get_session, create_face_data, get_employee_by_no
+            from utils import save_face_image, encode_face_image
+
+            with get_session() as session:
+                # Get employee
+                employee = get_employee_by_no(session, face_data.get('employee_no'))
+                if not employee:
+                    logger.warning(f"Employee not found for face data: {face_data.get('employee_no')}")
+                    return self.create_error_response()
+
+                # Save face image if available
+                if face_data.get('face_image'):
+                    try:
+                        image_path = save_face_image(
+                            face_data['face_image'],
+                            face_data['employee_no']
+                        )
+                        logger.info(f"Face image saved: {image_path}")
+                    except Exception as e:
+                        logger.error(f"Error saving face image: {e}")
+
+                # Encode face template
+                face_template = encode_face_image(face_data.get('face_template', b''))
+
+                # Create face data record
+                create_face_data(
+                    session,
+                    employee_id=employee.id,
+                    face_template=face_template,
+                    face_image=face_data.get('face_image'),
+                    quality_score=face_data.get('quality_score', 0.0)
+                )
+
+                logger.info(f"Face data stored for employee: {face_data.get('employee_no')}")
+
+        except Exception as e:
+            logger.error(f"Face data processing error: {e}")
+            return self.create_error_response()
+
         return self.create_face_response()
     
     def parse_device_info(self, payload: bytes) -> Dict:
@@ -288,7 +330,62 @@ class ISUPProtocolHandler:
             event['raw'] = payload.hex()
         
         return event
-    
+
+    def parse_face_data(self, payload: bytes) -> Dict:
+        """Parse face data from payload"""
+
+        face_data = {}
+
+        try:
+            # Face data structure (varies by device):
+            # Employee No: 16 bytes
+            # Face Image Length: 4 bytes
+            # Face Image: variable length
+            # Face Template Length: 4 bytes
+            # Face Template: variable length
+            # Quality Score: 4 bytes (float)
+
+            offset = 0
+
+            # Parse employee number
+            if len(payload) >= 16:
+                face_data['employee_no'] = payload[offset:offset+16].decode('utf-8', errors='ignore').strip('\x00')
+                offset += 16
+
+            # Parse face image length and data
+            if len(payload) >= offset + 4:
+                face_image_len = struct.unpack('<I', payload[offset:offset+4])[0]
+                offset += 4
+
+                if face_image_len > 0 and len(payload) >= offset + face_image_len:
+                    face_data['face_image'] = payload[offset:offset+face_image_len]
+                    offset += face_image_len
+
+            # Parse face template length and data
+            if len(payload) >= offset + 4:
+                face_template_len = struct.unpack('<I', payload[offset:offset+4])[0]
+                offset += 4
+
+                if face_template_len > 0 and len(payload) >= offset + face_template_len:
+                    face_data['face_template'] = payload[offset:offset+face_template_len]
+                    offset += face_template_len
+
+            # Parse quality score
+            if len(payload) >= offset + 4:
+                face_data['quality_score'] = struct.unpack('<f', payload[offset:offset+4])[0]
+
+            logger.debug(f"Parsed face data: employee={face_data.get('employee_no')}, "
+                        f"image_size={len(face_data.get('face_image', b''))}, "
+                        f"template_size={len(face_data.get('face_template', b''))}, "
+                        f"quality={face_data.get('quality_score', 0.0)}")
+
+        except Exception as e:
+            logger.error(f"Face data parse error: {e}")
+            face_data['error'] = str(e)
+            face_data['raw'] = payload.hex()[:100]  # First 100 chars for debugging
+
+        return face_data
+
     def create_register_response(self) -> bytes:
         """Create registration acknowledgment"""
         
