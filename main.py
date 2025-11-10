@@ -115,29 +115,122 @@ async def root():
     }
 
 # Device management endpoints
+@app.post("/api/devices", summary="Register terminal device")
+async def add_device(
+    device_id: str = Form(..., description="Device ID/Serial Number"),
+    ip_address: str = Form(..., description="Device IP address"),
+    username: str = Form("admin", description="Device username"),
+    password: str = Form("", description="Device password"),
+    model: str = Form(None, description="Device model"),
+    location: str = Form(None, description="Device location")
+):
+    """Register new terminal device"""
+
+    print(f"\n{'='*80}")
+    print("📱 REGISTERING NEW TERMINAL")
+    print(f"{'='*80}")
+    print(f"Device ID: {device_id}")
+    print(f"IP Address: {ip_address}")
+    print(f"Model: {model or 'N/A'}")
+    print(f"Location: {location or 'N/A'}")
+    print(f"{'-'*80}")
+
+    try:
+        # Validate IP
+        if not validate_ip_address(ip_address):
+            print(f"❌ FAILED: Invalid IP address")
+            raise HTTPException(status_code=400, detail="Invalid IP address format")
+
+        # Test connection
+        print(f"\n🔌 Testing connection to {ip_address}...")
+        from hikvision_sdk import HikvisionDevice
+
+        device = HikvisionDevice(ip_address, username, password)
+        if not device.test_connection():
+            print(f"❌ FAILED: Cannot connect to device")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot connect to device at {ip_address}. Check IP, username, password."
+            )
+
+        print(f"✅ Connection successful")
+
+        # Save to database
+        print(f"\n💾 Saving to database...")
+        with get_session() as session:
+            # Check if device already exists
+            existing = get_device_by_ip(session, ip_address)
+            if existing:
+                print(f"⚠️  Device already exists, updating...")
+                existing.device_id = device_id
+                existing.username = username
+                existing.password = password
+                existing.model = model
+                existing.location = location
+                existing.status = 'online'
+                session.commit()
+                session.refresh(existing)
+                db_device = existing
+            else:
+                db_device = create_device(
+                    session,
+                    device_id=device_id,
+                    ip_address=ip_address,
+                    username=username,
+                    password=password,
+                    model=model,
+                    location=location,
+                    status='online'
+                )
+
+        print(f"✅ Device registered with ID: {db_device.id}")
+        print(f"{'='*80}")
+        print(f"✅ TERMINAL REGISTERED SUCCESSFULLY")
+        print(f"{'='*80}\n")
+
+        return {
+            "status": "success",
+            "device_id": db_device.id,
+            "ip_address": ip_address,
+            "message": "Terminal registered successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ ERROR: {str(e)}")
+        print(f"{'='*80}\n")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/devices")
 async def get_devices():
-    """Get all connected devices"""
-    if not isup_server:
-        raise HTTPException(status_code=503, detail="ISUP server not running")
-    
-    devices = isup_server.get_devices()
-    return {
-        "total": len(devices),
-        "devices": devices
-    }
+    """Get all devices from database"""
+    try:
+        with get_session() as session:
+            db_devices = get_all_devices(session)
+            devices = [format_device_data(dev) for dev in db_devices]
+
+        return {
+            "total": len(devices),
+            "devices": devices
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/devices/{device_ip}")
 async def get_device(device_ip: str):
     """Get specific device info"""
-    if not isup_server:
-        raise HTTPException(status_code=503, detail="ISUP server not running")
-    
-    devices = isup_server.get_devices()
-    if device_ip not in devices:
-        raise HTTPException(status_code=404, detail="Device not found")
-    
-    return devices[device_ip]
+    try:
+        with get_session() as session:
+            device = get_device_by_ip(session, device_ip)
+            if not device:
+                raise HTTPException(status_code=404, detail="Device not found")
+
+            return format_device_data(device)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Employee management endpoints
 @app.post("/api/employees",
@@ -246,32 +339,69 @@ async def add_employee(
             result["steps"].append({"step": "save_to_database", "status": "success", "db_id": db_employee.id})
             result["employee_id"] = db_employee.id
 
-        # Step 4: Sync with terminals
-        print(f"\n📡 Step 4: Syncing with terminals...")
-        if isup_server:
-            devices = isup_server.get_devices()
-            device_count = len(devices)
+        # Step 4: Sync with terminals via HTTP API
+        print(f"\n📡 Step 4: Syncing with terminals via HTTP API...")
 
-            if device_count > 0:
-                print(f"Found {device_count} connected terminal(s):")
-                for device_ip in devices:
-                    print(f"  📱 Terminal: {device_ip}")
-                    log_device_status(device_ip, f"Syncing employee {employee_no}")
-                    # TODO: Send employee data to terminal via SDK/ISUP
+        # Get all devices from database
+        terminal_sync_results = []
 
-                print(f"✅ Sync initiated with {device_count} terminal(s)")
+        with get_session() as session:
+            from database import get_all_devices
+            db_devices = get_all_devices(session)
+
+            if db_devices:
+                print(f"Found {len(db_devices)} terminal(s) in database:")
+
+                from hikvision_sdk import sync_employee_to_device
+
+                for device in db_devices:
+                    print(f"\n  📱 Terminal: {device.ip_address} ({device.device_id})")
+
+                    # Prepare employee data
+                    employee_data = {
+                        'employee_no': employee_no,
+                        'name': f"{name} {surname or ''}".strip(),
+                        'card_no': card_no
+                    }
+
+                    # Sync to device
+                    success, message = sync_employee_to_device(
+                        device.ip_address,
+                        employee_data,
+                        face_image_path
+                    )
+
+                    terminal_sync_results.append({
+                        "terminal": device.ip_address,
+                        "device_id": device.device_id,
+                        "success": success,
+                        "message": message
+                    })
+
+                # Summary
+                success_count = sum(1 for r in terminal_sync_results if r["success"])
+                failed_count = len(terminal_sync_results) - success_count
+
+                print(f"\n📊 Sync Summary:")
+                print(f"  ✅ Successful: {success_count}")
+                print(f"  ❌ Failed: {failed_count}")
+
                 result["steps"].append({
                     "step": "sync_terminals",
-                    "status": "success",
-                    "terminals": device_count,
-                    "note": "SDK integration pending - employee will sync on next connection"
+                    "status": "success" if success_count > 0 else "failed",
+                    "terminals": len(db_devices),
+                    "successful": success_count,
+                    "failed": failed_count,
+                    "details": terminal_sync_results
                 })
             else:
-                print("⚠️  WARNING: No terminals connected")
-                result["steps"].append({"step": "sync_terminals", "status": "warning", "message": "No terminals connected"})
-        else:
-            print("⚠️  WARNING: ISUP server not running")
-            result["steps"].append({"step": "sync_terminals", "status": "warning", "message": "ISUP server not running"})
+                print("⚠️  WARNING: No terminals in database")
+                print("   Add terminals using: POST /api/devices")
+                result["steps"].append({
+                    "step": "sync_terminals",
+                    "status": "warning",
+                    "message": "No terminals configured in database"
+                })
 
         # Success
         result["status"] = "success"
