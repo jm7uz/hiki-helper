@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment variables
+.env.local
+.env.*.local
+
+# Temporary files
+*.tmp
+temp/
+tmp/
+*.bak
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+employees.json
+attendance_events.json
+data/faces/*
+data/temp/*
+!data/faces/.gitkeep
+!data/temp/.gitkeep
