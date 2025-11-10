@@ -12,6 +12,7 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Optional
 from pydantic import BaseModel
+from pathlib import Path
 import json
 import os
 
@@ -329,9 +330,9 @@ async def add_employee(
                 surname=surname or '',
                 department=department or '',
                 position=position or '',
-                card_no=card_no,
-                phone=phone,
-                email=email,
+                card_no=card_no if card_no else None,  # NULL if empty
+                phone=phone if phone else None,
+                email=email if email else None,
                 face_registered=bool(face_image_data)
             )
 
@@ -461,13 +462,24 @@ async def delete_employee_endpoint(employee_no: str):
 
             logger.info(f"Employee deleted from database: {employee_no}")
 
-        # Remove from terminals (via ISUP protocol)
-        if isup_server:
-            devices = isup_server.get_devices()
-            for device_ip in devices:
-                log_device_status(device_ip, f"Removing employee {employee_no}")
-                # TODO: Send delete command to terminal via SDK/ISUP
-            logger.info(f"Employee removal initiated from {len(devices)} terminals")
+        # Remove from terminals (via HTTP API)
+        print(f"\n{'='*80}")
+        print(f"🗑️  DELETING EMPLOYEE FROM TERMINALS")
+        print(f"{'='*80}")
+
+        with get_session() as session:
+            from database import get_all_devices
+            from hikvision_sdk import delete_employee_from_device
+
+            db_devices = get_all_devices(session)
+
+            if db_devices:
+                for device in db_devices:
+                    print(f"\n  📱 Terminal: {device.ip_address}")
+                    success, message = delete_employee_from_device(device.ip_address, employee_no)
+                    print(f"  Result: {message}")
+
+        print(f"{'='*80}\n")
 
         return {
             "status": "success",
@@ -479,6 +491,220 @@ async def delete_employee_endpoint(employee_no: str):
         raise
     except Exception as e:
         log_error("delete_employee", str(e), {"employee_no": employee_no})
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Sync endpoints
+@app.post("/api/sync/employee/{employee_no}", summary="Sync single employee to terminals")
+async def sync_employee_to_terminals(employee_no: str):
+    """Sync existing employee to all terminals"""
+
+    print(f"\n{'='*80}")
+    print(f"🔄 SYNCING EMPLOYEE TO TERMINALS")
+    print(f"{'='*80}")
+    print(f"Employee No: {employee_no}")
+    print(f"{'-'*80}")
+
+    try:
+        # Get employee from database
+        print(f"\n📋 Step 1: Loading employee from database...")
+        with get_session() as session:
+            employee = get_employee_by_no(session, employee_no)
+            if not employee:
+                print(f"❌ FAILED: Employee not found")
+                raise HTTPException(status_code=404, detail=f"Employee {employee_no} not found")
+
+            print(f"✅ Found: {employee.full_name}")
+
+            # Get face image if exists
+            face_image_path = None
+            face_images = list(Path("data/faces").glob(f"{employee_no}_*.jpg"))
+            if not face_images:
+                face_images = list(Path("data/faces").glob(f"{employee_no}_*.png"))
+
+            if face_images:
+                face_image_path = str(face_images[0])
+                print(f"📸 Face image: {face_image_path}")
+            else:
+                print(f"⚠️  No face image found")
+
+        # Sync to terminals
+        print(f"\n📡 Step 2: Syncing to terminals...")
+
+        terminal_results = []
+
+        with get_session() as session:
+            from database import get_all_devices
+            from hikvision_sdk import sync_employee_to_device
+
+            db_devices = get_all_devices(session)
+
+            if not db_devices:
+                print(f"❌ FAILED: No terminals in database")
+                raise HTTPException(status_code=400, detail="No terminals configured. Add terminals first using POST /api/devices")
+
+            print(f"Found {len(db_devices)} terminal(s):")
+
+            for device in db_devices:
+                print(f"\n  📱 Terminal: {device.ip_address} ({device.device_id})")
+
+                employee_data = {
+                    'employee_no': employee.employee_no,
+                    'name': employee.full_name,
+                    'card_no': employee.card_no
+                }
+
+                success, message = sync_employee_to_device(
+                    device.ip_address,
+                    employee_data,
+                    face_image_path
+                )
+
+                terminal_results.append({
+                    "terminal": device.ip_address,
+                    "device_id": device.device_id,
+                    "success": success,
+                    "message": message
+                })
+
+        # Summary
+        success_count = sum(1 for r in terminal_results if r["success"])
+        failed_count = len(terminal_results) - success_count
+
+        print(f"\n{'='*80}")
+        print(f"📊 SYNC SUMMARY")
+        print(f"{'='*80}")
+        print(f"Employee: {employee.full_name} ({employee_no})")
+        print(f"✅ Successful: {success_count}")
+        print(f"❌ Failed: {failed_count}")
+        print(f"{'='*80}\n")
+
+        return {
+            "status": "success" if success_count > 0 else "failed",
+            "employee_no": employee_no,
+            "employee_name": employee.full_name,
+            "terminals_total": len(db_devices),
+            "terminals_successful": success_count,
+            "terminals_failed": failed_count,
+            "details": terminal_results
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"\n❌ ERROR: {str(e)}")
+        print(f"{'='*80}\n")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/sync/all-employees", summary="Sync all employees to terminals")
+async def sync_all_employees_to_terminals():
+    """Sync all active employees to all terminals"""
+
+    print(f"\n{'='*80}")
+    print(f"🔄 SYNCING ALL EMPLOYEES TO TERMINALS")
+    print(f"{'='*80}")
+
+    try:
+        # Get all employees
+        with get_session() as session:
+            employees = get_all_employees(session, active_only=True)
+            employee_count = len(employees)
+
+            if employee_count == 0:
+                print(f"⚠️  No employees found")
+                return {
+                    "status": "warning",
+                    "message": "No employees to sync",
+                    "employees_total": 0
+                }
+
+            print(f"Found {employee_count} employee(s)")
+
+            # Get terminals
+            db_devices = get_all_devices(session)
+
+            if not db_devices:
+                print(f"❌ No terminals configured")
+                raise HTTPException(status_code=400, detail="No terminals configured")
+
+            print(f"Found {len(db_devices)} terminal(s)")
+            print(f"{'-'*80}")
+
+        # Sync each employee
+        from pathlib import Path
+        from hikvision_sdk import sync_employee_to_device
+
+        sync_results = []
+
+        for idx, employee in enumerate(employees, 1):
+            print(f"\n[{idx}/{employee_count}] Syncing: {employee.full_name} ({employee.employee_no})")
+
+            # Find face image
+            face_image_path = None
+            face_images = list(Path("data/faces").glob(f"{employee.employee_no}_*.jpg"))
+            if not face_images:
+                face_images = list(Path("data/faces").glob(f"{employee.employee_no}_*.png"))
+            if face_images:
+                face_image_path = str(face_images[0])
+
+            employee_data = {
+                'employee_no': employee.employee_no,
+                'name': employee.full_name,
+                'card_no': employee.card_no
+            }
+
+            terminal_results = []
+
+            with get_session() as session:
+                db_devices = get_all_devices(session)
+
+                for device in db_devices:
+                    success, message = sync_employee_to_device(
+                        device.ip_address,
+                        employee_data,
+                        face_image_path
+                    )
+
+                    terminal_results.append({
+                        "terminal": device.ip_address,
+                        "success": success
+                    })
+
+            success_count = sum(1 for r in terminal_results if r["success"])
+
+            sync_results.append({
+                "employee_no": employee.employee_no,
+                "employee_name": employee.full_name,
+                "terminals_successful": success_count,
+                "terminals_failed": len(terminal_results) - success_count
+            })
+
+        # Final summary
+        total_success = sum(r["terminals_successful"] for r in sync_results)
+        total_failed = sum(r["terminals_failed"] for r in sync_results)
+
+        print(f"\n{'='*80}")
+        print(f"📊 FINAL SUMMARY")
+        print(f"{'='*80}")
+        print(f"Total Employees: {employee_count}")
+        print(f"Total Terminals: {len(db_devices)}")
+        print(f"✅ Successful Syncs: {total_success}")
+        print(f"❌ Failed Syncs: {total_failed}")
+        print(f"{'='*80}\n")
+
+        return {
+            "status": "success",
+            "employees_total": employee_count,
+            "terminals_total": len(db_devices),
+            "syncs_successful": total_success,
+            "syncs_failed": total_failed,
+            "details": sync_results
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"\n❌ ERROR: {str(e)}")
+        print(f"{'='*80}\n")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Attendance endpoints
