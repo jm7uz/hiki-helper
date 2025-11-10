@@ -4,8 +4,8 @@ Hikvision Attendance System - Main Server
 ISUP Protocol + FastAPI Backend
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, BackgroundTasks, File, UploadFile, Form
+from fastapi.responses import JSONResponse, Response
 from contextlib import asynccontextmanager
 import threading
 import logging
@@ -76,7 +76,9 @@ async def lifespan(app: FastAPI):
         logger.warning("Server will continue without database")
 
     global isup_server
-    isup_server = ISUPServer(host='10.100.104.129', port=7660)
+    isup_host = os.getenv('ISUP_HOST', '0.0.0.0')
+    isup_port = int(os.getenv('ISUP_PORT', '7660'))
+    isup_server = ISUPServer(host=isup_host, port=isup_port)
 
     # Start ISUP server in background thread
     server_thread = threading.Thread(target=isup_server.start, daemon=True)
@@ -104,8 +106,8 @@ async def root():
     return {
         "status": "running",
         "isup_server": {
-            "host": "10.100.104.129",
-            "port": 7660,
+            "host": os.getenv('ISUP_HOST', '0.0.0.0'),
+            "port": int(os.getenv('ISUP_PORT', '7660')),
             "protocol": "ISUP 5.0"
         },
         "api_version": "1.0.0",
@@ -138,53 +140,167 @@ async def get_device(device_ip: str):
     return devices[device_ip]
 
 # Employee management endpoints
-@app.post("/api/employees")
-async def add_employee(employee: Employee):
-    """Add new employee"""
-    try:
-        # Validate employee number
-        if not validate_employee_no(employee.employee_no):
-            raise HTTPException(status_code=400, detail="Invalid employee number format")
+@app.post("/api/employees",
+         summary="Add new employee",
+         description="Add employee with face image (JPG/PNG). Face image will be saved and synced with terminals.")
+async def add_employee(
+    employee_no: str = Form(..., description="Employee number (required)"),
+    name: str = Form(..., description="Employee name (required)"),
+    surname: str = Form(None, description="Employee surname"),
+    department: str = Form(None, description="Department"),
+    position: str = Form(None, description="Position"),
+    card_no: str = Form(None, description="Card number"),
+    phone: str = Form(None, description="Phone number"),
+    email: str = Form(None, description="Email address"),
+    face_image: UploadFile = File(None, description="Face image (JPG/PNG)")
+):
+    """Add new employee with optional face image"""
 
-        # Add to database
+    # Console output - START
+    print("\n" + "="*80)
+    print("🚀 ADDING NEW EMPLOYEE")
+    print("="*80)
+    print(f"Employee No: {employee_no}")
+    print(f"Name: {name} {surname or ''}")
+    print(f"Department: {department or 'N/A'}")
+    print(f"Position: {position or 'N/A'}")
+    print(f"Card: {card_no or 'N/A'}")
+    print(f"Face Image: {'Yes' if face_image else 'No'}")
+    print("-"*80)
+
+    result = {
+        "status": "pending",
+        "employee_no": employee_no,
+        "steps": []
+    }
+
+    try:
+        # Step 1: Validate employee number
+        print("📝 Step 1: Validating employee number...")
+        if not validate_employee_no(employee_no):
+            print("❌ FAILED: Invalid employee number format")
+            raise HTTPException(status_code=400, detail="Invalid employee number format (must be alphanumeric, 1-50 chars)")
+        print("✅ Valid employee number")
+        result["steps"].append({"step": "validate_employee_no", "status": "success"})
+
+        # Step 2: Validate face image if provided
+        face_image_path = None
+        face_image_data = None
+
+        if face_image and face_image.filename:
+            print(f"\n📸 Step 2: Processing face image: {face_image.filename}")
+
+            # Check file extension
+            file_ext = face_image.filename.split('.')[-1].lower()
+            if file_ext not in ['jpg', 'jpeg', 'png']:
+                print(f"❌ FAILED: Invalid file type '.{file_ext}'")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid file type. Only JPG and PNG are allowed. Got: {file_ext}"
+                )
+            print(f"✅ Valid image format: {file_ext.upper()}")
+
+            # Read image data
+            face_image_data = await face_image.read()
+            file_size_kb = len(face_image_data) / 1024
+            print(f"📊 Image size: {file_size_kb:.2f} KB")
+
+            # Save face image
+            try:
+                from utils import save_face_image
+                face_image_path = save_face_image(face_image_data, employee_no)
+                print(f"✅ Face image saved: {face_image_path}")
+                result["steps"].append({"step": "save_face_image", "status": "success", "path": face_image_path})
+            except Exception as e:
+                print(f"⚠️  WARNING: Failed to save image: {e}")
+                result["steps"].append({"step": "save_face_image", "status": "warning", "error": str(e)})
+        else:
+            print("\n⏭️  Step 2: Skipped (no face image provided)")
+            result["steps"].append({"step": "face_image", "status": "skipped"})
+
+        # Step 3: Add to database
+        print(f"\n💾 Step 3: Saving to database...")
         with get_session() as session:
             # Check if employee already exists
-            existing = get_employee_by_no(session, employee.employee_no)
+            existing = get_employee_by_no(session, employee_no)
             if existing:
-                raise HTTPException(status_code=409, detail="Employee already exists")
+                print(f"❌ FAILED: Employee {employee_no} already exists")
+                raise HTTPException(status_code=409, detail=f"Employee {employee_no} already exists")
 
             # Create employee in database
-            db_employee = create_employee(
+            from database import create_employee as db_create_employee
+            db_employee = db_create_employee(
                 session,
-                employee_no=employee.employee_no,
-                name=employee.name,
-                department=employee.department,
-                card_no=employee.card_no,
-                face_registered=bool(employee.face_data)
+                employee_no=employee_no,
+                name=name,
+                surname=surname or '',
+                department=department or '',
+                position=position or '',
+                card_no=card_no,
+                phone=phone,
+                email=email,
+                face_registered=bool(face_image_data)
             )
 
-            logger.info(f"Employee added to database: {employee.employee_no} - {employee.name}")
+            print(f"✅ Employee saved to database with ID: {db_employee.id}")
+            result["steps"].append({"step": "save_to_database", "status": "success", "db_id": db_employee.id})
+            result["employee_id"] = db_employee.id
 
-        # Sync with terminals (via ISUP protocol)
-        # For now, we'll just log it - actual sync requires SDK integration
+        # Step 4: Sync with terminals
+        print(f"\n📡 Step 4: Syncing with terminals...")
         if isup_server:
             devices = isup_server.get_devices()
-            for device_ip in devices:
-                log_device_status(device_ip, f"Syncing employee {employee.employee_no}")
-                # TODO: Send employee data to terminal via SDK/ISUP
-            logger.info(f"Employee sync initiated with {len(devices)} terminals")
+            device_count = len(devices)
 
-        return {
-            "status": "success",
-            "employee_no": employee.employee_no,
-            "message": "Employee added successfully and synced with terminals"
-        }
+            if device_count > 0:
+                print(f"Found {device_count} connected terminal(s):")
+                for device_ip in devices:
+                    print(f"  📱 Terminal: {device_ip}")
+                    log_device_status(device_ip, f"Syncing employee {employee_no}")
+                    # TODO: Send employee data to terminal via SDK/ISUP
 
-    except HTTPException:
+                print(f"✅ Sync initiated with {device_count} terminal(s)")
+                result["steps"].append({
+                    "step": "sync_terminals",
+                    "status": "success",
+                    "terminals": device_count,
+                    "note": "SDK integration pending - employee will sync on next connection"
+                })
+            else:
+                print("⚠️  WARNING: No terminals connected")
+                result["steps"].append({"step": "sync_terminals", "status": "warning", "message": "No terminals connected"})
+        else:
+            print("⚠️  WARNING: ISUP server not running")
+            result["steps"].append({"step": "sync_terminals", "status": "warning", "message": "ISUP server not running"})
+
+        # Success
+        result["status"] = "success"
+        result["message"] = f"Employee {employee_no} added successfully"
+
+        print("\n" + "="*80)
+        print("✅ SUCCESS: Employee added successfully!")
+        print("="*80 + "\n")
+
+        logger.info(f"✅ Employee added: {employee_no} - {name}")
+
+        return result
+
+    except HTTPException as http_ex:
+        result["status"] = "failed"
+        result["error"] = http_ex.detail
+        print("\n" + "="*80)
+        print(f"❌ FAILED: {http_ex.detail}")
+        print("="*80 + "\n")
         raise
+
     except Exception as e:
-        log_error("add_employee", str(e), employee.dict())
-        raise HTTPException(status_code=500, detail=str(e))
+        result["status"] = "error"
+        result["error"] = str(e)
+        print("\n" + "="*80)
+        print(f"❌ ERROR: {str(e)}")
+        print("="*80 + "\n")
+        log_error("add_employee", str(e), {"employee_no": employee_no, "name": name})
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
 @app.get("/api/employees")
 async def get_employees():
