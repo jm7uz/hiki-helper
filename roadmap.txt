@@ -1,0 +1,239 @@
+# HIKVISION ATTENDANCE SYSTEM - DEVELOPMENT ROADMAP
+# Project: Multi-branch Face Recognition Attendance System
+# Protocol: ISUP 5.0
+# Device: DS-K1T341CMF
+# Created: 2025-01-10
+
+## ✅ COMPLETED
+1. Terminal device network configuration
+2. ISUP protocol connection established
+3. Basic server running on 10.100.104.129:7660
+4. FastAPI web server on port 8000
+
+## 🔄 CURRENT PHASE: CORE BACKEND DEVELOPMENT
+
+### Phase 1: ISUP Protocol Handler (Current)
+```
+📁 project_structure/
+├── backend/
+│   ├── isup_handler.py      # ISUP protocol parser
+│   ├── models.py             # Database models
+│   ├── database.py           # PostgreSQL connection
+│   ├── api.py                # FastAPI routes
+│   └── utils.py              # Helper functions
+├── requirements.txt
+├── .env
+└── docker-compose.yml
+```
+
+#### Tasks:
+- [ ] Parse ISUP packets correctly
+- [ ] Handle device registration
+- [ ] Process attendance events
+- [ ] Implement heartbeat response
+- [ ] Add logging system
+
+### Phase 2: Database Setup
+```sql
+-- PostgreSQL tables needed:
+-- 1. branches (filiallar)
+-- 2. devices (terminallar)
+-- 3. employees (hodimlar)
+-- 4. attendance_records (davomat)
+-- 5. face_data (yuz ma'lumotlari)
+```
+
+#### Tasks:
+- [ ] Create PostgreSQL database schema
+- [ ] Setup SQLAlchemy ORM models
+- [ ] Create migration scripts
+- [ ] Add connection pooling
+- [ ] Implement CRUD operations
+
+### Phase 3: Device Management API
+```python
+# Terminal bilan ishlash uchun API endpoints:
+POST   /api/devices/register      # Terminal qo'shish
+GET    /api/devices/list          # Barcha terminallar
+PUT    /api/devices/{id}/sync     # Ma'lumotlarni sinxronlash
+DELETE /api/devices/{id}          # Terminal o'chirish
+```
+
+#### Tasks:
+- [ ] Device registration endpoint
+- [ ] Device status monitoring
+- [ ] Remote device configuration
+- [ ] Bulk device management
+- [ ] Device grouping by branch
+
+### Phase 4: Employee Management
+```python
+# Hodimlar bilan ishlash:
+POST   /api/employees              # Yangi hodim
+PUT    /api/employees/{id}         # Hodim ma'lumotlarini yangilash
+POST   /api/employees/{id}/face    # Yuz qo'shish
+POST   /api/employees/{id}/card    # Karta qo'shish
+GET    /api/employees/search       # Qidiruv
+DELETE /api/employees/{id}         # O'chirish
+POST   /api/employees/sync         # Terminallarga yuborish
+```
+
+#### Tasks:
+- [ ] Employee CRUD operations
+- [ ] Face image processing (base64)
+- [ ] Card number management
+- [ ] Employee-device assignment
+- [ ] Bulk import from Excel/CSV
+
+### Phase 5: Attendance Processing
+```python
+# Davomat ma'lumotlari:
+GET  /api/attendance/today         # Bugungi davomat
+GET  /api/attendance/report        # Hisobot
+POST /api/attendance/manual        # Qo'lda kiritish
+GET  /api/attendance/export        # Excel export
+GET  /api/attendance/statistics    # Statistika
+```
+
+#### Tasks:
+- [ ] Real-time attendance capture
+- [ ] Check-in/Check-out logic
+- [ ] Late arrival detection
+- [ ] Overtime calculation
+- [ ] Monthly/weekly reports
+
+### Phase 6: Multi-Branch Support
+```python
+# 12 ta filial uchun:
+branches = [
+    "Tashkent", "Samarkand", "Bukhara", 
+    "Khiva", "Fergana", "Andijan",
+    "Namangan", "Kokand", "Termez",
+    "Nukus", "Gulistan", "Navoi"
+]
+```
+
+#### Tasks:
+- [ ] Branch management system
+- [ ] Device-to-branch mapping
+- [ ] Branch-wise reporting
+- [ ] Centralized monitoring dashboard
+- [ ] Branch admin roles
+
+### Phase 7: Terminal SDK Integration
+```python
+# Hikvision SDK functions:
+- NET_DVR_SetCardReaderPlan()     # Access schedule
+- NET_DVR_SetUserInfo_V30()       # User management
+- NET_DVR_CaptureJPEGPicture()    # Photo capture
+- NET_DVR_GetAcsEvent()           # Event retrieval
+- NET_DVR_SetupAlarmChan_V41()    # Alarm channel
+```
+
+#### Tasks:
+- [ ] Python SDK wrapper
+- [ ] Bidirectional sync
+- [ ] Remote door control
+- [ ] Live face capture
+- [ ] Alarm handling
+
+### Phase 8: Web Admin Panel
+```javascript
+// React/Vue.js admin panel:
+- Dashboard with real-time stats
+- Employee management UI
+- Device monitoring
+- Report generation
+- Settings configuration
+```
+
+#### Tasks:
+- [ ] Frontend framework setup
+- [ ] Authentication system
+- [ ] Real-time WebSocket updates
+- [ ] Data visualization charts
+- [ ] Responsive design
+
+### Phase 9: Additional Features
+```
+- Telegram bot integration
+- Email notifications
+- SMS alerts
+- QR code support
+- Mobile app API
+- Backup automation
+```
+
+#### Tasks:
+- [ ] Telegram bot for notifications
+- [ ] Email service integration
+- [ ] SMS gateway setup
+- [ ] QR code generator
+- [ ] REST API documentation
+
+### Phase 10: Production Deployment
+```yaml
+# Docker deployment:
+- PostgreSQL container
+- Redis for caching
+- Nginx reverse proxy
+- SSL certificates
+- Monitoring (Prometheus/Grafana)
+```
+
+#### Tasks:
+- [ ] Docker containerization
+- [ ] CI/CD pipeline
+- [ ] Load testing
+- [ ] Security audit
+- [ ] Documentation
+
+## 📊 CURRENT STATUS CODES TO HANDLE
+
+```python
+# ISUP packet types to implement:
+0x0001 - Device registration
+0x0002 - Heartbeat
+0x0010 - Access control event
+0x0020 - Face data transfer
+0x0030 - Card event
+0x0040 - Alarm event
+0x0050 - Temperature data
+```
+
+## 🔧 IMMEDIATE NEXT STEPS
+
+1. Fix ISUP packet parsing (Connection established but no data)
+2. Implement proper packet structure for ISUP 5.0
+3. Add database models
+4. Create employee management endpoints
+5. Test with actual device events
+
+## 📝 NOTES
+
+- Device IP: 10.100.104.109
+- Server IP: 10.100.104.129
+- ISUP Port: 7660
+- API Port: 8000
+- Device Model: DS-K1T341CMF
+- Protocol: ISUP 5.0
+- Device ID: garanttest1
+
+## 🐛 CURRENT ISSUES TO FIX
+
+1. Connection opens but no data received
+2. Need to implement proper ISUP handshake
+3. Parse device registration packet
+4. Handle multiple connections properly
+
+## 💡 OPTIMIZATION IDEAS
+
+- Use asyncio for better performance
+- Implement connection pooling
+- Add Redis caching
+- Use message queue (RabbitMQ/Kafka)
+- Implement rate limiting
+
+---
+END OF ROADMAP v1.0
+Next update: After Phase 1 completion
